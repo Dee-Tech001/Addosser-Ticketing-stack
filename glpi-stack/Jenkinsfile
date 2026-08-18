@@ -1,0 +1,126 @@
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 20, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    parameters {
+        choice(name: 'ACTION', choices: ['deploy', 'rollback'], description: 'deploy = normal pipeline. rollback = revert remote VM to last known-good commit, skipping build/test.')
+    }
+
+    environment {
+        REMOTE_USER  = 'glpi'
+        REMOTE_HOST  = '192.168.100.181'
+        REMOTE_DIR   = '/opt/glpi-stack'
+        SSH_CRED_ID  = 'glpi-vm-ssh-key'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps { checkout scm }
+        }
+
+        stage('Build') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                // "Build" for a compose stack = validate config resolves cleanly
+                // and required images can actually be pulled. Fails fast, before
+                // anything touches the remote VM.
+                sh 'docker compose -f docker-compose.yml config > /dev/null'
+                sh 'docker compose -f docker-compose.yml pull'
+            }
+        }
+
+        stage('Test') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                sh '''
+                    echo "Running secret-leak scan..."
+                    if grep -R --include="*.yml" -E "(PASSWORD|SECRET|TOKEN)=[^\\$]" . ; then
+                        echo "Hardcoded secret detected. Aborting."
+                        exit 1
+                    fi
+
+                    echo "Validating required scripts are executable..."
+                    for f in scripts/deploy.sh scripts/rollback.sh scripts/healthcheck.sh; do
+                        [[ -f "$f" ]] || { echo "Missing $f"; exit 1; }
+                    done
+
+                    echo "Spinning up an isolated local test project to smoke-test compose config..."
+                    docker compose -f docker-compose.yml -p glpi-citest config -q
+                '''
+            }
+        }
+
+        stage('Deploy') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                sshagent(credentials: ["${SSH_CRED_ID}"]) {
+                    sh '''
+                        scp -o StrictHostKeyChecking=yes scripts/deploy.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/deploy.sh
+                        ssh ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/deploy.sh && ${REMOTE_DIR}/scripts/deploy.sh ${REMOTE_DIR}"
+                    '''
+                }
+            }
+        }
+
+        stage('Rollback') {
+            when { expression { params.ACTION == 'rollback' } }
+            steps {
+                sshagent(credentials: ["${SSH_CRED_ID}"]) {
+                    sh '''
+                        scp -o StrictHostKeyChecking=yes scripts/rollback.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/rollback.sh
+                        ssh ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/rollback.sh && ${REMOTE_DIR}/scripts/rollback.sh ${REMOTE_DIR}"
+                    '''
+                }
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                sshagent(credentials: ["${SSH_CRED_ID}"]) {
+                    script {
+                        def result = sh(
+                            script: '''
+                                scp -o StrictHostKeyChecking=yes scripts/healthcheck.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/healthcheck.sh
+                                ssh ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/healthcheck.sh && ${REMOTE_DIR}/scripts/healthcheck.sh"
+                            ''',
+                            returnStatus: true
+                        )
+                        if (result != 0 && params.ACTION == 'deploy') {
+                            echo "Health check failed after deploy. Triggering automatic rollback..."
+                            sh '''
+                                ssh ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/rollback.sh && ${REMOTE_DIR}/scripts/rollback.sh ${REMOTE_DIR}"
+                            '''
+                            error("Deploy failed health check — automatic rollback executed. Investigate before redeploying.")
+                        } else if (result != 0) {
+                            error("Health check failed after manual rollback — the last known-good commit may itself be broken.")
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Cleanup') {
+            steps {
+                sshagent(credentials: ["${SSH_CRED_ID}"]) {
+                    sh 'ssh ${REMOTE_USER}@${REMOTE_HOST} "docker image prune -f"'
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "${params.ACTION == 'rollback' ? 'Rollback' : 'Deploy'} completed and passed health check."
+        }
+        failure {
+            echo "Pipeline failed. Check console output above — if this was a deploy, automatic rollback may already have run."
+        }
+    }
+}
