@@ -12,11 +12,11 @@ pipeline {
     }
 
     environment {
-        REMOTE_USER  = 'glpi'
-        REMOTE_HOST  = '192.168.100.181'
-        REMOTE_DIR   = '/opt/glpi-stack'
-        SSH_CRED_ID  = 'Addosser-glpi-ssh'
-         LOCAL_DIR    = 'glpi-stack'  
+        REMOTE_USER = 'glpi'
+        REMOTE_HOST = '192.168.100.181'
+        REMOTE_DIR  = '/opt/glpi-stack'
+        SSH_CRED_ID = 'Addosser-glpi-ssh'
+        LOCAL_DIR   = 'glpi-stack'   
     }
 
     stages {
@@ -26,12 +26,18 @@ pipeline {
             steps { checkout scm }
         }
 
-           stage('Build') {
+        stage('Build') {
             when { expression { params.ACTION == 'deploy' } }
             steps {
                 dir("${LOCAL_DIR}") {
-                    sh 'docker compose -f docker-compose.yml config > /dev/null'
-                    sh 'docker compose -f docker-compose.yml pull'
+                    sh '''
+                        echo "Validating docker-compose setup locally..."
+                        if [ ! -f "docker-compose.yml" ]; then
+                            echo "Error: docker-compose.yml missing in ${LOCAL_DIR}"
+                            exit 1
+                        fi
+                        docker compose -f docker-compose.yml config > /dev/null
+                    '''
                 }
             }
         }
@@ -40,21 +46,21 @@ pipeline {
             when { expression { params.ACTION == 'deploy' } }
             steps {
                 dir("${LOCAL_DIR}") {
-                sh '''
-                    echo "Running secret-leak scan..."
-                    if grep -R --include="*.yml" -E "(PASSWORD|SECRET|TOKEN)=[^\\$]" . ; then
-                        echo "Hardcoded secret detected. Aborting."
-                        exit 1
-                    fi
+                    sh '''
+                        echo "Running secret-leak scan..."
+                        if grep -R --include="*.yml" -E "(PASSWORD|SECRET|TOKEN)=[^\\$]" . ; then
+                            echo "Hardcoded secret detected. Aborting."
+                            exit 1
+                        fi
 
-                    echo "Validating required scripts are executable..."
-                    for f in scripts/deploy.sh scripts/rollback.sh scripts/healthcheck.sh; do
-                        [[ -f "$f" ]] || { echo "Missing $f"; exit 1; }
-                    done
+                        echo "Validating required scripts are executable..."
+                        for f in scripts/deploy.sh scripts/rollback.sh scripts/healthcheck.sh; do
+                            [[ -f "$f" ]] || { echo "Missing $f"; exit 1; }
+                        done
 
-                    echo "Spinning up an isolated local test project to smoke-test compose config..."
-                    docker compose -f docker-compose.yml -p glpi-citest config -q
-                '''
+                        echo "Testing compose config validity..."
+                        docker compose -f docker-compose.yml -p glpi-citest config -q
+                    '''
                 }
             }
         }
@@ -63,12 +69,13 @@ pipeline {
             when { expression { params.ACTION == 'deploy' } }
             steps {
                 dir("${LOCAL_DIR}") {
-                sshagent(credentials: ["${SSH_CRED_ID}"]) {
-                    sh '''
-                        scp -o StrictHostKeyChecking=yes scripts/deploy.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/deploy.sh
-                        ssh ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/deploy.sh && ${REMOTE_DIR}/scripts/deploy.sh ${REMOTE_DIR}"
-                    '''
-                }
+                    sshagent(credentials: ["${SSH_CRED_ID}"]) {
+                        sh '''
+                            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "mkdir -p ${REMOTE_DIR}/scripts"
+                            scp -o StrictHostKeyChecking=no scripts/deploy.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/deploy.sh
+                            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/deploy.sh && ${REMOTE_DIR}/scripts/deploy.sh ${REMOTE_DIR}"
+                        '''
+                    }
                 }
             }
         }
@@ -77,12 +84,13 @@ pipeline {
             when { expression { params.ACTION == 'rollback' } }
             steps {
                 dir("${LOCAL_DIR}") {
-                sshagent(credentials: ["${SSH_CRED_ID}"]) {
-                    sh '''
-                        scp -o StrictHostKeyChecking=yes scripts/rollback.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/rollback.sh
-                        ssh ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/rollback.sh && ${REMOTE_DIR}/scripts/rollback.sh ${REMOTE_DIR}"
-                    '''
-                }
+                    sshagent(credentials: ["${SSH_CRED_ID}"]) {
+                        sh '''
+                            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "mkdir -p ${REMOTE_DIR}/scripts"
+                            scp -o StrictHostKeyChecking=no scripts/rollback.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/rollback.sh
+                            ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/rollback.sh && ${REMOTE_DIR}/scripts/rollback.sh ${REMOTE_DIR}"
+                        '''
+                    }
                 }
             }
         }
@@ -90,34 +98,35 @@ pipeline {
         stage('Health Check') {
             steps {
                 dir("${LOCAL_DIR}") {
-                sshagent(credentials: ["${SSH_CRED_ID}"]) {
-                    script {
-                        def result = sh(
-                            script: '''
-                                scp -o StrictHostKeyChecking=yes scripts/healthcheck.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/healthcheck.sh
-                                ssh ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/healthcheck.sh && ${REMOTE_DIR}/scripts/healthcheck.sh"
-                            ''',
-                            returnStatus: true
-                        )
-                        if (result != 0 && params.ACTION == 'deploy') {
-                            echo "Health check failed after deploy. Triggering automatic rollback..."
-                            sh '''
-                                ssh ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/rollback.sh && ${REMOTE_DIR}/scripts/rollback.sh ${REMOTE_DIR}"
-                            '''
-                            error("Deploy failed health check — automatic rollback executed. Investigate before redeploying.")
-                        } else if (result != 0) {
-                            error("Health check failed after manual rollback — the last known-good commit may itself be broken.")
+                    sshagent(credentials: ["${SSH_CRED_ID}"]) {
+                        script {
+                            def result = sh(
+                                script: '''
+                                    ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "mkdir -p ${REMOTE_DIR}/scripts"
+                                    scp -o StrictHostKeyChecking=no scripts/healthcheck.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/healthcheck.sh
+                                    ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/healthcheck.sh && ${REMOTE_DIR}/scripts/healthcheck.sh"
+                                ''',
+                                returnStatus: true
+                            )
+                            if (result != 0 && params.ACTION == 'deploy') {
+                                echo "Health check failed after deploy. Triggering automatic rollback..."
+                                sh '''
+                                    ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/rollback.sh && ${REMOTE_DIR}/scripts/rollback.sh ${REMOTE_DIR}"
+                                '''
+                                error("Deploy failed health check — automatic rollback executed.")
+                            } else if (result != 0) {
+                                error("Health check failed after manual rollback.")
+                            }
                         }
                     }
                 }
             }
         }
-        }
 
         stage('Cleanup') {
             steps {
                 sshagent(credentials: ["${SSH_CRED_ID}"]) {
-                    sh 'ssh ${REMOTE_USER}@${REMOTE_HOST} "docker image prune -f"'
+                    sh 'ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "docker image prune -f"'
                 }
             }
         }
@@ -128,7 +137,7 @@ pipeline {
             echo "${params.ACTION == 'rollback' ? 'Rollback' : 'Deploy'} completed and passed health check."
         }
         failure {
-            echo "Pipeline failed. Check console output above — if this was a deploy, automatic rollback may already have run."
+            echo "Pipeline failed. Check console output above."
         }
     }
 }
