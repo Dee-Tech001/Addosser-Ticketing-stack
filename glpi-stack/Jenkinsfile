@@ -17,7 +17,7 @@ pipeline {
         REMOTE_DIR   = '/opt/glpi-stack'
         SSH_CRED_ID  = 'Addosser-glpi-ssh'
         LOCAL_DIR    = 'glpi-stack'
-        ENV_CRED_ID  = 'Addosser-glpi-env-file'  
+        ENV_CRED_ID  = 'addosser-glpi-env-file'  
     }
 
     stages {
