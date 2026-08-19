@@ -16,6 +16,7 @@ pipeline {
         REMOTE_HOST  = '192.168.100.181'
         REMOTE_DIR   = '/opt/glpi-stack'
         SSH_CRED_ID  = 'Addosser-glpi-ssh'
+         LOCAL_DIR    = 'glpi-stack'  
     }
 
     stages {
@@ -25,20 +26,20 @@ pipeline {
             steps { checkout scm }
         }
 
-        stage('Build') {
+           stage('Build') {
             when { expression { params.ACTION == 'deploy' } }
             steps {
-                // "Build" for a compose stack = validate config resolves cleanly
-                // and required images can actually be pulled. Fails fast, before
-                // anything touches the remote VM.
-                sh 'docker compose -f docker-compose.yml config > /dev/null'
-                sh 'docker compose -f docker-compose.yml pull'
+                dir("${LOCAL_DIR}") {
+                    sh 'docker compose -f docker-compose.yml config > /dev/null'
+                    sh 'docker compose -f docker-compose.yml pull'
+                }
             }
         }
 
         stage('Test') {
             when { expression { params.ACTION == 'deploy' } }
             steps {
+                dir("${LOCAL_DIR}") {
                 sh '''
                     echo "Running secret-leak scan..."
                     if grep -R --include="*.yml" -E "(PASSWORD|SECRET|TOKEN)=[^\\$]" . ; then
@@ -54,17 +55,20 @@ pipeline {
                     echo "Spinning up an isolated local test project to smoke-test compose config..."
                     docker compose -f docker-compose.yml -p glpi-citest config -q
                 '''
+                }
             }
         }
 
         stage('Deploy') {
             when { expression { params.ACTION == 'deploy' } }
             steps {
+                dir("${LOCAL_DIR}") {
                 sshagent(credentials: ["${SSH_CRED_ID}"]) {
                     sh '''
                         scp -o StrictHostKeyChecking=yes scripts/deploy.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/deploy.sh
                         ssh ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/deploy.sh && ${REMOTE_DIR}/scripts/deploy.sh ${REMOTE_DIR}"
                     '''
+                }
                 }
             }
         }
@@ -72,17 +76,20 @@ pipeline {
         stage('Rollback') {
             when { expression { params.ACTION == 'rollback' } }
             steps {
+                dir("${LOCAL_DIR}") {
                 sshagent(credentials: ["${SSH_CRED_ID}"]) {
                     sh '''
                         scp -o StrictHostKeyChecking=yes scripts/rollback.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/rollback.sh
                         ssh ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/rollback.sh && ${REMOTE_DIR}/scripts/rollback.sh ${REMOTE_DIR}"
                     '''
                 }
+                }
             }
         }
 
         stage('Health Check') {
             steps {
+                dir("${LOCAL_DIR}") {
                 sshagent(credentials: ["${SSH_CRED_ID}"]) {
                     script {
                         def result = sh(
@@ -104,6 +111,7 @@ pipeline {
                     }
                 }
             }
+        }
         }
 
         stage('Cleanup') {
