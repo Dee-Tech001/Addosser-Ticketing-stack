@@ -15,7 +15,7 @@ pipeline {
         REMOTE_USER  = 'glpi'
         REMOTE_HOST  = '192.168.100.181'
         REMOTE_DIR   = '/opt/glpi-stack'
-        SSH_CRED_ID  = 'glpi-vm-ssh-key'
+        SSH_CRED_ID  = 'Addosser-glpi-ssh'
     }
 
     stages {
