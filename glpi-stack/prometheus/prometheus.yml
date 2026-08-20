@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'glpi-nginx'
+    static_configs:
+      - targets: ['nginx:80']
+  # Add mariadb-exporter / nginx-exporter jobs here once those sidecars exist.
+  # Prometheus currently has no metrics endpoint to scrape on nginx:80 itself —
+  # this is a placeholder until you add nginx-prometheus-exporter as a sidecar.
