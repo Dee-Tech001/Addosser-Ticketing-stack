@@ -125,7 +125,7 @@ services:
     networks:
       - monitoring
 
-      
+
 networks:
   frontend:
     driver: bridge
@@ -141,3 +141,4 @@ volumes:
   glpi_data:
   prometheus_data:
   redis_data:
+  grafana_data:
