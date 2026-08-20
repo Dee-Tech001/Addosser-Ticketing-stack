@@ -63,21 +63,21 @@ pipeline {
             }
         }
 
-        stage('Deploy') {
-            when { expression { params.ACTION == 'deploy' } }
-            steps {
-                dir("${LOCAL_DIR}") {
-                sshagent(credentials: ["${SSH_CRED_ID}"]) {
-                    sh '''
-                        ssh -o StrictHostKeyChecking=yes ${REMOTE_USER}@${REMOTE_HOST} "mkdir -p ${REMOTE_DIR}/scripts"
-                        scp -o StrictHostKeyChecking=yes .env ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/.env
-                        scp -o StrictHostKeyChecking=yes scripts/deploy.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/deploy.sh
-                        ssh ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/deploy.sh && ${REMOTE_DIR}/scripts/deploy.sh ${REMOTE_DIR}"
-                    '''
-                }
-                }
+       stage('Deploy') {
+    when { expression { params.ACTION == 'deploy' } }
+    steps {
+        dir("${LOCAL_DIR}") {
+            withCredentials([sshUserPrivateKey(credentialsId: "${SSH_CRED_ID}", keyFileVariable: 'SSH_KEY')]) {
+                sh '''
+                    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "mkdir -p ${REMOTE_DIR}/scripts"
+                    scp -i "$SSH_KEY" -o StrictHostKeyChecking=no .env ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/.env
+                    scp -i "$SSH_KEY" -o StrictHostKeyChecking=no scripts/deploy.sh ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/scripts/deploy.sh
+                    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_DIR}/scripts/deploy.sh && ${REMOTE_DIR}/scripts/deploy.sh ${REMOTE_DIR}"
+                '''
             }
         }
+    }
+}
 
         stage('Rollback') {
             
