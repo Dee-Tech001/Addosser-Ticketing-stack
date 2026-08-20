@@ -35,7 +35,7 @@ pipeline {
                         sh 'cp "$ENV_FILE" .env'
                     }
                     sh 'docker compose -f docker-compose.yml config > /dev/null'
-                    sh 'docker compose -f docker-compose.yml pull'
+                    sh 'docker compose -f docker-compose.yml pull || docker compose -f docker-compose.yml pull'
                 }
             }
         }
