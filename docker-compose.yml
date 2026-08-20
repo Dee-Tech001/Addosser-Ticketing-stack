@@ -41,11 +41,14 @@ services:
       timeout: 5s
       retries: 5
       start_period: 40s
-
+  
   nginx:
     image: nginx:1.27-alpine
     container_name: glpi-nginx
     restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
     depends_on:
       glpi:
         condition: service_healthy
@@ -59,18 +62,33 @@ services:
       timeout: 5s
       retries: 5
 
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: glpi-cloudflared
+  glpi-redis:
+    image: redis:7.2-alpine
+    container_name: glpi-redis
     restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?required}
-    depends_on:
-      nginx:
-        condition: service_healthy
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
     networks:
-      - frontend
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 15s
+      timeout: 5s
+      retries: 5  
+
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: glpi-cloudflared
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?required}
+  #   depends_on:
+  #     nginx:
+  #       condition: service_healthy
+  #   networks:
+  #     - frontend
 
   prometheus:
     image: prom/prometheus:latest
@@ -81,15 +99,39 @@ services:
       - prometheus_data:/prometheus
     networks:
       - monitoring
-      - backend   # needed only to scrape mariadb-exporter/nginx-exporter if added later
-    # Deliberately NOT on frontend network — no reason Prometheus needs internet-facing access.
+      - backend  
+  
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: glpi-cadvisor
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - monitoring
 
+  grafana:
+    image: grafana/grafana:latest
+    container_name: glpi-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - monitoring
+
+      
 networks:
   frontend:
     driver: bridge
   backend:
     driver: bridge
-    internal: true   # DB traffic physically cannot reach the internet
+    internal: true   
   monitoring:
     driver: bridge
     internal: true
@@ -98,3 +140,4 @@ volumes:
   mariadb_data:
   glpi_data:
   prometheus_data:
+  redis_data:
